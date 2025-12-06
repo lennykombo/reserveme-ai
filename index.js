@@ -24,21 +24,21 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 app.post("/ai-search", async (req, res) => {
   try {
     const { query, userLocation } = req.body;
+    if (!query) return res.status(400).json({ error: "Query is required" });
 
-    if (!query) {
-      return res.status(400).json({ error: "Query is required" });
-    }
+    // Step 1: Hash query for caching
+    const queryHash = crypto
+      .createHash("sha256")
+      .update(query.toLowerCase().trim())
+      .digest("hex");
 
-    // Hash query for caching
-    const queryHash = crypto.createHash("sha256").update(query.toLowerCase().trim()).digest("hex");
-
-    // Check Firestore cache
+    // Step 2: Check Firestore cache
     const cacheSnap = await db.collection("ai_search_cache").doc(queryHash).get();
     if (cacheSnap.exists) {
       return res.json({ success: true, fromCache: true, restaurants: cacheSnap.data().restaurants });
     }
 
-    // Send query to Llama 3
+    // Step 3: Send query to Llama 3
     const prompt = `
 Extract restaurant search intent from this query:
 "${query}"
@@ -54,21 +54,36 @@ Return ONLY JSON:
 }
     `;
 
-    const aiRes = await groq.chat.completions.create({
-      model: "llama-3.1-8b-instant",
-      messages: [{ role: "user", content: prompt }],
-    });
-
-    // Safely parse AI response
-    let intent;
+    let aiRes;
     try {
-      intent = JSON.parse(aiRes.choices[0]?.message?.content || "{}");
-    } catch (jsonErr) {
-      console.error("Failed to parse AI response:", aiRes.choices[0]?.message?.content);
-      return res.status(500).json({ error: "Failed to parse AI response" });
+      aiRes = await groq.chat.completions.create({
+        model: "llama-3.1-8b-instant", // double-check this model ID
+        messages: [{ role: "user", content: prompt }],
+      });
+      console.log("AI Raw Response:", aiRes);
+    } catch (err) {
+      console.error("AI call failed:", err);
+      return res.status(500).json({ error: "AI request failed" });
     }
 
-    // Query Firestore
+    // Step 4: Parse AI response safely
+    let intent;
+    try {
+      intent = JSON.parse(aiRes.choices?.[0]?.message?.content || "{}");
+    } catch (err) {
+      console.error("Failed to parse AI output:", err);
+      return res.status(500).json({ error: "AI output invalid JSON" });
+    }
+
+    // Step 5: Set default values to avoid crashes
+    intent.cuisine = intent.cuisine || "";
+    intent.ambience = intent.ambience || "";
+    intent.location = intent.location || userLocation || "";
+    intent.groupSize = Number(intent.groupSize) || 1;
+
+    console.log("Parsed Intent:", intent);
+
+    // Step 6: Query Firestore
     const usersSnap = await db.collection("users").get();
     const cuisinesSnap = await db.collection("restaurantcuisine").get();
     const tablesSnap = await db.collection("tables").get();
@@ -77,43 +92,41 @@ Return ONLY JSON:
       const userData = userDoc.data();
       const cuisineDoc = cuisinesSnap.docs.find(c => c.data().userId === userDoc.id);
       if (!cuisineDoc) return false;
-
       const tableDocs = tablesSnap.docs.filter(t => t.data().userId === userDoc.id);
       const totalSeats = tableDocs.reduce((sum, t) => sum + Number(t.data().numSeats || 0), 0);
 
-      const groupSize = Number(intent.groupSize) || 1;
-      const cuisineMatch = cuisineDoc.data().cuisines.includes(intent.cuisine || "");
-      const locationMatch = userData.location.toLowerCase().includes((intent.location || "").toLowerCase());
-
-      return cuisineMatch && totalSeats >= groupSize && locationMatch;
+      return (
+        cuisineDoc.data().cuisines.includes(intent.cuisine) &&
+        totalSeats >= intent.groupSize &&
+        userData.location?.toLowerCase().includes(intent.location.toLowerCase())
+      );
     });
 
-    // Ranking
-    const ranked = matchedRestaurants.map(r => {
-      const data = r.data();
-      return {
-        ...data,
-        score:
-          (data.ambience?.includes(intent.ambience || "") ? 30 : 0) +
-          (data.location.toLowerCase() === (intent.location || "").toLowerCase() ? 25 : 0)
-      };
-    }).sort((a, b) => b.score - a.score);
+    // Step 7: Ranking
+    const ranked = matchedRestaurants.map(r => ({
+      id: r.id,
+      ...r.data(),
+      score:
+        (r.data().ambience?.includes(intent.ambience) ? 30 : 0) +
+        (r.data().location?.toLowerCase() === intent.location.toLowerCase() ? 25 : 0)
+    })).sort((a, b) => b.score - a.score);
 
-    // Save to Firestore cache
+    // Step 8: Save to Firestore cache
     await db.collection("ai_search_cache").doc(queryHash).set({
       extractedIntent: intent,
       restaurants: ranked.map(r => r.id),
       createdAt: new Date(),
-      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 6) // 6 hours
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 6), // 6 hours
     });
 
     res.json({ success: true, fromCache: false, restaurants: ranked });
 
   } catch (err) {
-    console.error("AI search failed:", err);
+    console.error("Unexpected error in /ai-search:", err);
     res.status(500).json({ error: "AI search failed" });
   }
 });
+
 
 
 // Add this **above** app.listen()
