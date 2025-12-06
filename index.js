@@ -10,6 +10,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+
+app.get("/", (req, res) => {
+  res.send("✅ ReserveMe AI Backend is Live on Render");
+});
+
+
 // Llama 3 (Groq) client
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
