@@ -50,7 +50,7 @@ Return ONLY JSON:
     `;
 
     const aiRes = await groq.chat.completions.create({
-      model: "llama3-8b-8192",
+      model: "llama-3.1-8b-instant",
       messages: [{ role: "user", content: prompt }],
     });
 
@@ -97,6 +97,22 @@ Return ONLY JSON:
     res.status(500).json({ error: "AI search failed" });
   }
 });
+
+// Add this **above** app.listen()
+app.get("/geocode", async (req, res) => {
+  const { q } = req.query;
+  try {
+    const response = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`
+    );
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error("Geocode error:", err);
+    res.status(500).json({ error: "Failed to geocode" });
+  }
+});
+
 
 app.listen(process.env.PORT || 5000, () => {
   console.log(`Backend running on port ${process.env.PORT || 5000}`);
