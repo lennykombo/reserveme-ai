@@ -4,6 +4,7 @@ import crypto from "crypto";
 import dotenv from "dotenv";
 import { db } from "./firebase.js";
 import { Groq } from "groq-sdk";
+import fetch from "node-fetch";
 
 dotenv.config();
 const app = express();
@@ -104,11 +105,23 @@ app.get('/geocode', async (req, res) => {
     const query = req.query.q;
     if (!query) return res.status(400).json({ error: "Missing query parameter" });
 
-    const result = await groq.query(query, { model: "llama-3.1-8b-instant" });
-    res.json(result);
+    const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
+    const response = await fetch(url, { headers: { 'User-Agent': 'ReserveMeApp/1.0' } });
+    const data = await response.json();
+
+    if (!data || data.length === 0) {
+      return res.status(404).json({ error: "No results found" });
+    }
+
+    // Return the first match
+    res.json({
+      lat: data[0].lat,
+      lon: data[0].lon,
+      display_name: data[0].display_name
+    });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
+    console.error("Geocode error:", err);
+    res.status(500).json({ error: "Geocoding failed" });
   }
 });
 
