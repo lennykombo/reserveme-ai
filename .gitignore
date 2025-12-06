@@ -4,7 +4,7 @@ node_modules/
 # Environment variables
 .env
 
-# Firebase private key
+# Firebase Admin SDK private key
 serviceAccountKey.json
 
 # Logs
