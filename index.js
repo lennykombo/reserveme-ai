@@ -99,19 +99,19 @@ Return ONLY JSON:
 });
 
 // Add this **above** app.listen()
-app.get("/geocode", async (req, res) => {
-  const { q } = req.query;
+app.get('/geocode', async (req, res) => {
   try {
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`
-    );
-    const data = await response.json();
-    res.json(data);
+    const query = req.query.q;
+    if (!query) return res.status(400).json({ error: "Missing query parameter" });
+
+    const result = await groq.query(query, { model: "llama-3.1-8b-instant" });
+    res.json(result);
   } catch (err) {
-    console.error("Geocode error:", err);
-    res.status(500).json({ error: "Failed to geocode" });
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
+
 
 
 app.listen(process.env.PORT || 5000, () => {
