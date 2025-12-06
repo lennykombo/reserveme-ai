@@ -25,16 +25,20 @@ app.post("/ai-search", async (req, res) => {
   try {
     const { query, userLocation } = req.body;
 
-    // Step 4a: Hash query for caching
+    if (!query) {
+      return res.status(400).json({ error: "Query is required" });
+    }
+
+    // Hash query for caching
     const queryHash = crypto.createHash("sha256").update(query.toLowerCase().trim()).digest("hex");
 
-    // Step 4b: Check Firestore cache
+    // Check Firestore cache
     const cacheSnap = await db.collection("ai_search_cache").doc(queryHash).get();
     if (cacheSnap.exists) {
       return res.json({ success: true, fromCache: true, restaurants: cacheSnap.data().restaurants });
     }
 
-    // Step 4c: Send query to Llama 3
+    // Send query to Llama 3
     const prompt = `
 Extract restaurant search intent from this query:
 "${query}"
@@ -55,9 +59,16 @@ Return ONLY JSON:
       messages: [{ role: "user", content: prompt }],
     });
 
-    const intent = JSON.parse(aiRes.choices[0].message.content);
+    // Safely parse AI response
+    let intent;
+    try {
+      intent = JSON.parse(aiRes.choices[0]?.message?.content || "{}");
+    } catch (jsonErr) {
+      console.error("Failed to parse AI response:", aiRes.choices[0]?.message?.content);
+      return res.status(500).json({ error: "Failed to parse AI response" });
+    }
 
-    // Step 4d: Query Firestore using your schema
+    // Query Firestore
     const usersSnap = await db.collection("users").get();
     const cuisinesSnap = await db.collection("restaurantcuisine").get();
     const tablesSnap = await db.collection("tables").get();
@@ -65,25 +76,30 @@ Return ONLY JSON:
     const matchedRestaurants = usersSnap.docs.filter(userDoc => {
       const userData = userDoc.data();
       const cuisineDoc = cuisinesSnap.docs.find(c => c.data().userId === userDoc.id);
-      const tableDocs = tablesSnap.docs.filter(t => t.data().userId === userDoc.id);
-      const totalSeats = tableDocs.reduce((sum, t) => sum + Number(t.data().numSeats), 0);
+      if (!cuisineDoc) return false;
 
-      return (
-        cuisineDoc.data().cuisines.includes(intent.cuisine) &&
-        totalSeats >= intent.groupSize &&
-        userData.location.toLowerCase().includes(intent.location.toLowerCase())
-      );
+      const tableDocs = tablesSnap.docs.filter(t => t.data().userId === userDoc.id);
+      const totalSeats = tableDocs.reduce((sum, t) => sum + Number(t.data().numSeats || 0), 0);
+
+      const groupSize = Number(intent.groupSize) || 1;
+      const cuisineMatch = cuisineDoc.data().cuisines.includes(intent.cuisine || "");
+      const locationMatch = userData.location.toLowerCase().includes((intent.location || "").toLowerCase());
+
+      return cuisineMatch && totalSeats >= groupSize && locationMatch;
     });
 
-    // Step 4e: Ranking
-    const ranked = matchedRestaurants.map(r => ({
-      ...r.data(),
-      score:
-        (r.ambience?.includes(intent.ambience) ? 30 : 0) +
-        (r.location.toLowerCase() === intent.location.toLowerCase() ? 25 : 0)
-    })).sort((a,b) => b.score - a.score);
+    // Ranking
+    const ranked = matchedRestaurants.map(r => {
+      const data = r.data();
+      return {
+        ...data,
+        score:
+          (data.ambience?.includes(intent.ambience || "") ? 30 : 0) +
+          (data.location.toLowerCase() === (intent.location || "").toLowerCase() ? 25 : 0)
+      };
+    }).sort((a, b) => b.score - a.score);
 
-    // Step 4f: Save to Firestore cache
+    // Save to Firestore cache
     await db.collection("ai_search_cache").doc(queryHash).set({
       extractedIntent: intent,
       restaurants: ranked.map(r => r.id),
@@ -93,11 +109,12 @@ Return ONLY JSON:
 
     res.json({ success: true, fromCache: false, restaurants: ranked });
 
-  } catch(err) {
-    console.error(err);
+  } catch (err) {
+    console.error("AI search failed:", err);
     res.status(500).json({ error: "AI search failed" });
   }
 });
+
 
 // Add this **above** app.listen()
 app.get('/geocode', async (req, res) => {
