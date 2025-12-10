@@ -422,6 +422,20 @@ if (keywords.length) {
   }
 });
 
+app.get("/test-firestore", async (req, res) => {
+  try {
+    const snap = await db.collection("users").limit(5).get();
+    res.json({
+      ok: true,
+      count: snap.size,
+      sample: snap.docs.map(d => d.data())
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+
 // ---------------------
 app.get("/", (req, res) => res.send("✅ ReserveMe AI Search Backend (Optimized)"));
 
