@@ -337,7 +337,7 @@ Query: "${query}"
     AI_QUERY_CACHE.set(normalizedQuery, { place, cuisine, vibe, maxBudget, people, keywords });
 
     const byUser = await loadAllCollectionsByUserId();
-
+console.log("BY USER:", JSON.stringify(byUser, null, 2));
     let candidates = Object.entries(byUser)
   .map(([uid, bucket]) => buildRestaurantProfile(uid, bucket))
   .filter((p) => p.raw?.userDoc?.role === "hotel");
