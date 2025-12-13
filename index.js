@@ -313,10 +313,12 @@ app.post("/ai-search", async (req, res) => {
       const snap = await db.collection("restaurants_search").get();
       let candidates = snap.docs.map(d => d.data());
 
+      console.log("Candidates before filtering:", candidates.length);
       // Apply filters safely (lowercase normalization)
       if (place) {
         const placeNorm = place.toLowerCase();
         candidates = candidates.filter(r => r.location.toLowerCase().includes(placeNorm));
+         console.log("After place filter:", candidates.length);
       }
 
       if (cuisine) {
@@ -324,10 +326,12 @@ app.post("/ai-search", async (req, res) => {
         candidates = candidates.filter(r =>
           r.cuisines.some(c => c.toLowerCase().includes(cuisineNorm))
         );
+        console.log("After cuisine filter:", candidates.length);
       }
 
       if (maxBudget) {
         candidates = candidates.filter(r => r.averageCost <= maxBudget);
+        console.log("After budget filter:", candidates.length);
       }
 
       if (vibe) {
@@ -335,6 +339,7 @@ app.post("/ai-search", async (req, res) => {
         candidates = candidates.filter(r =>
           [...r.vibes, ...r.amenities].join(" ").toLowerCase().includes(vibeNorm)
         );
+        console.log("After vide filter:", candidates.length);
       }
 
       if (keywords && keywords.length) {
