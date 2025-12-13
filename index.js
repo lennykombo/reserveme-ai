@@ -303,19 +303,20 @@ app.post("/ai-search", async (req, res) => {
     }
 
     const normalizedQuery = query.toLowerCase().trim();
-    console.log("🔍 SEARCH QUERY:", normalizedQuery);
+    console.log("🔍 SEARCH QUERY:", query);
 
-    // ✅ Check AI cache first
+    // ✅ AI CACHE HIT
     if (AI_QUERY_CACHE.has(normalizedQuery)) {
       console.log("🧠 USING AI CACHE");
       const intent = AI_QUERY_CACHE.get(normalizedQuery);
       let { place, cuisine, vibe, maxBudget, people, keywords } = intent;
 
+      // Fetch candidates from index
       const snap = await db.collection("restaurants_search").get();
       let candidates = snap.docs.map(d => d.data());
       console.log("Total candidates from index:", candidates.length);
 
-      // ---- Apply filters ----
+      // ⚡ Normalize filters
       if (place) {
         const placeNorm = place.toLowerCase();
         candidates = candidates.filter(r => r.location.toLowerCase().includes(placeNorm));
@@ -348,7 +349,16 @@ app.post("/ai-search", async (req, res) => {
         console.log("After VIBE filter:", candidates.length);
       }
 
-      if (keywords && keywords.length) {
+      // ⚡ Ensure keywords is always an array
+      if (!Array.isArray(keywords)) {
+        if (typeof keywords === "string" && keywords.trim()) {
+          keywords = [keywords.trim()];
+        } else {
+          keywords = [];
+        }
+      }
+
+      if (keywords.length) {
         const keywordsNorm = keywords.map(k => k.toLowerCase());
         candidates = candidates.filter(p => {
           const blob = JSON.stringify(p).toLowerCase();
@@ -360,17 +370,36 @@ app.post("/ai-search", async (req, res) => {
       return res.json({
         success: true,
         cached: true,
-        intent,
+        intent: { place, cuisine, vibe, maxBudget, people, keywords },
         total: candidates.length,
         restaurants: candidates.slice(0, 50),
       });
     }
 
-    // ✅ AI extraction for new query
+    // ✅ AI REQUEST (new query)
     const prompt = `
 You are an AI that extracts restaurant search intent.
-Extract fields: place, cuisine, vibe, maxBudget, people, keywords.
-Return ONLY valid JSON.
+
+Extract the following fields if present:
+- place (area or location)
+- cuisine (food type)
+- vibe (romantic, family, chill, rooftop, etc)
+- maxBudget (number only, if price is mentioned)
+- people (number of guests — detect from phrases like:
+  "for 2", "2 people", "group of 5", "for ten", "party of 8")
+- keywords (any remaining useful words)
+
+Return ONLY valid JSON in this format:
+
+{
+  "place": "",
+  "cuisine": "",
+  "vibe": "",
+  "maxBudget": null,
+  "people": null,
+  "keywords": []
+}
+
 Query: "${query}"
 `;
 
@@ -383,16 +412,26 @@ Query: "${query}"
     console.log("🧠 AI RAW RESPONSE:", rawAiText);
 
     const intent = safeParseJSON(rawAiText);
-    const place = normalize(intent.place);
-    const cuisine = normalize(intent.cuisine);
-    const vibe = normalize(intent.vibe);
-    const maxBudget = Number(intent.maxBudget) || null;
-    const people = Number(intent.people) || extractPeopleFromText(query) || null;
-    const keywords = intent.keywords || [];
+
+    let place = normalize(intent.place);
+    let cuisine = normalize(intent.cuisine);
+    let vibe = normalize(intent.vibe);
+    let maxBudget = Number(intent.maxBudget) || null;
+    let people = Number(intent.people) || extractPeopleFromText(query) || null;
+
+    // ⚡ Ensure keywords is always an array
+    let keywords = intent.keywords;
+    if (!Array.isArray(keywords)) {
+      if (typeof keywords === "string" && keywords.trim()) {
+        keywords = [keywords.trim()];
+      } else {
+        keywords = [];
+      }
+    }
 
     console.log("Parsed intent:", { place, cuisine, vibe, maxBudget, people, keywords });
 
-    // Save to AI cache
+    // ✅ SAVE TO AI CACHE
     AI_QUERY_CACHE.set(normalizedQuery, { place, cuisine, vibe, maxBudget, people, keywords });
 
     // Fetch candidates from indexed collection
@@ -400,49 +439,25 @@ Query: "${query}"
     let candidates = snap.docs.map(d => d.data());
     console.log("Total candidates from index:", candidates.length);
 
-    // ---- Apply filters ----
-    if (place) {
-      const placeNorm = place.toLowerCase();
-      candidates = candidates.filter(r => r.location.toLowerCase().includes(placeNorm));
-      console.log("After PLACE filter:", candidates.length);
-    }
-
-    if (cuisine) {
-      const cuisineNorm = cuisine.toLowerCase();
-      candidates = candidates.filter(r =>
-        (r.cuisines || []).some(c => c.toLowerCase().includes(cuisineNorm))
-      );
-      console.log("After CUISINE filter:", candidates.length);
-    }
-
-    if (maxBudget) {
-      candidates = candidates.filter(r => r.averageCost <= maxBudget);
-      console.log("After BUDGET filter:", candidates.length);
-    }
-
-    if (people) {
-      candidates = candidates.filter(r => r.maxSeats >= people);
-      console.log("After PEOPLE filter:", candidates.length);
-    }
-
-    if (vibe) {
-      const vibeNorm = vibe.toLowerCase();
-      candidates = candidates.filter(r =>
-        [...r.vibes, ...r.amenities].join(" ").toLowerCase().includes(vibeNorm)
-      );
-      console.log("After VIBE filter:", candidates.length);
-    }
-
+    // Apply filters (same as cache block)
+    if (place) candidates = candidates.filter(r => r.location.toLowerCase().includes(place));
+    if (cuisine) candidates = candidates.filter(r =>
+      (r.cuisines || []).some(c => c.toLowerCase().includes(cuisine))
+    );
+    if (maxBudget) candidates = candidates.filter(r => r.averageCost <= maxBudget);
+    if (people) candidates = candidates.filter(r => r.maxSeats >= people);
+    if (vibe) candidates = candidates.filter(r =>
+      [...r.vibes, ...r.amenities].join(" ").toLowerCase().includes(vibe)
+    );
     if (keywords.length) {
       const keywordsNorm = keywords.map(k => k.toLowerCase());
       candidates = candidates.filter(p => {
         const blob = JSON.stringify(p).toLowerCase();
         return keywordsNorm.some(k => blob.includes(k));
       });
-      console.log("After KEYWORDS filter:", candidates.length);
     }
 
-    console.log("Final candidate count:", candidates.length);
+    console.log("Final candidates:", candidates.length);
 
     return res.json({
       success: true,
@@ -456,6 +471,7 @@ Query: "${query}"
     return res.status(500).json({ error: "Server error", details: err.message });
   }
 });
+
 
 
 app.get("/test-firestore", async (req, res) => {
