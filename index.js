@@ -280,21 +280,6 @@ async function buildRestaurantsSearchIndex() {
 // ---------------------
 // 🔁 REBUILD SEARCH INDEX (RUN ONCE)
 // ---------------------
-app.post("/rebuild-search-index", async (req, res) => {
-  try {
-    await buildRestaurantsSearchIndex();
-    res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-
-// ---------------------
-// ✅ AI SEARCH (CACHED)
-// ---------------------
-
 app.post("/ai-search", async (req, res) => {
   try {
     const { query } = req.body;
@@ -303,20 +288,34 @@ app.post("/ai-search", async (req, res) => {
     }
 
     const normalizedQuery = query.toLowerCase().trim();
-    console.log("🔍 SEARCH QUERY:", query);
+    console.log("🔍 SEARCH QUERY:", normalizedQuery);
 
+    // ---------------------------
     // ✅ AI CACHE HIT
+    // ---------------------------
     if (AI_QUERY_CACHE.has(normalizedQuery)) {
       console.log("🧠 USING AI CACHE");
-      const intent = AI_QUERY_CACHE.get(normalizedQuery);
-      let { place, cuisine, vibe, maxBudget, people, keywords } = intent;
 
-      // Fetch candidates from index
+      let cachedIntent = AI_QUERY_CACHE.get(normalizedQuery);
+
+      // Normalize keywords to always be an array
+      if (!Array.isArray(cachedIntent.keywords)) {
+        if (typeof cachedIntent.keywords === "string" && cachedIntent.keywords.trim()) {
+          cachedIntent.keywords = [cachedIntent.keywords.trim()];
+        } else {
+          cachedIntent.keywords = [];
+        }
+      }
+
+      const { place, cuisine, vibe, maxBudget, people, keywords } = cachedIntent;
+
       const snap = await db.collection("restaurants_search").get();
       let candidates = snap.docs.map(d => d.data());
       console.log("Total candidates from index:", candidates.length);
 
-      // ⚡ Normalize filters
+      // ---------------------------
+      // Apply filters
+      // ---------------------------
       if (place) {
         const placeNorm = place.toLowerCase();
         candidates = candidates.filter(r => r.location.toLowerCase().includes(placeNorm));
@@ -349,34 +348,26 @@ app.post("/ai-search", async (req, res) => {
         console.log("After VIBE filter:", candidates.length);
       }
 
-      // ⚡ Ensure keywords is always an array
-      if (!Array.isArray(keywords)) {
-        if (typeof keywords === "string" && keywords.trim()) {
-          keywords = [keywords.trim()];
-        } else {
-          keywords = [];
-        }
-      }
-
       if (keywords.length) {
         const keywordsNorm = keywords.map(k => k.toLowerCase());
         candidates = candidates.filter(p => {
           const blob = JSON.stringify(p).toLowerCase();
           return keywordsNorm.some(k => blob.includes(k));
         });
-        console.log("After KEYWORDS filter:", candidates.length);
       }
 
       return res.json({
         success: true,
         cached: true,
-        intent: { place, cuisine, vibe, maxBudget, people, keywords },
+        intent: cachedIntent,
         total: candidates.length,
         restaurants: candidates.slice(0, 50),
       });
     }
 
+    // ---------------------------
     // ✅ AI REQUEST (new query)
+    // ---------------------------
     const prompt = `
 You are an AI that extracts restaurant search intent.
 
@@ -418,9 +409,9 @@ Query: "${query}"
     let vibe = normalize(intent.vibe);
     let maxBudget = Number(intent.maxBudget) || null;
     let people = Number(intent.people) || extractPeopleFromText(query) || null;
+    let keywords = intent.keywords || [];
 
-    // ⚡ Ensure keywords is always an array
-    let keywords = intent.keywords;
+    // Normalize keywords to always be an array
     if (!Array.isArray(keywords)) {
       if (typeof keywords === "string" && keywords.trim()) {
         keywords = [keywords.trim()];
@@ -429,26 +420,44 @@ Query: "${query}"
       }
     }
 
-    console.log("Parsed intent:", { place, cuisine, vibe, maxBudget, people, keywords });
-
-    // ✅ SAVE TO AI CACHE
+    // Save to AI cache
     AI_QUERY_CACHE.set(normalizedQuery, { place, cuisine, vibe, maxBudget, people, keywords });
 
-    // Fetch candidates from indexed collection
+    // Fetch candidates from search index
     const snap = await db.collection("restaurants_search").get();
     let candidates = snap.docs.map(d => d.data());
     console.log("Total candidates from index:", candidates.length);
 
-    // Apply filters (same as cache block)
-    if (place) candidates = candidates.filter(r => r.location.toLowerCase().includes(place));
-    if (cuisine) candidates = candidates.filter(r =>
-      (r.cuisines || []).some(c => c.toLowerCase().includes(cuisine))
-    );
-    if (maxBudget) candidates = candidates.filter(r => r.averageCost <= maxBudget);
-    if (people) candidates = candidates.filter(r => r.maxSeats >= people);
-    if (vibe) candidates = candidates.filter(r =>
-      [...r.vibes, ...r.amenities].join(" ").toLowerCase().includes(vibe)
-    );
+    // ---------------------------
+    // Apply filters
+    // ---------------------------
+    if (place) {
+      const placeNorm = place.toLowerCase();
+      candidates = candidates.filter(r => r.location.toLowerCase().includes(placeNorm));
+    }
+
+    if (cuisine) {
+      const cuisineNorm = cuisine.toLowerCase();
+      candidates = candidates.filter(r =>
+        (r.cuisines || []).some(c => c.toLowerCase().includes(cuisineNorm))
+      );
+    }
+
+    if (maxBudget) {
+      candidates = candidates.filter(r => r.averageCost <= maxBudget);
+    }
+
+    if (people) {
+      candidates = candidates.filter(r => r.maxSeats >= people);
+    }
+
+    if (vibe) {
+      const vibeNorm = vibe.toLowerCase();
+      candidates = candidates.filter(r =>
+        [...r.vibes, ...r.amenities].join(" ").toLowerCase().includes(vibeNorm)
+      );
+    }
+
     if (keywords.length) {
       const keywordsNorm = keywords.map(k => k.toLowerCase());
       candidates = candidates.filter(p => {
@@ -456,8 +465,6 @@ Query: "${query}"
         return keywordsNorm.some(k => blob.includes(k));
       });
     }
-
-    console.log("Final candidates:", candidates.length);
 
     return res.json({
       success: true,
@@ -471,7 +478,6 @@ Query: "${query}"
     return res.status(500).json({ error: "Server error", details: err.message });
   }
 });
-
 
 
 app.get("/test-firestore", async (req, res) => {
