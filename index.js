@@ -103,6 +103,8 @@ async function loadAllCollectionsByUserId() {
     "reviews",
     "sections",
     "extrareserves",
+    "coverimage",
+    "logoimage"
   ];
 
   const snaps = await Promise.all(
@@ -195,6 +197,101 @@ function buildRestaurantProfile(userId, bucket) {
 }
 
 // ---------------------
+// 🔎 BUILD SEARCH INDEX
+// ---------------------
+async function buildRestaurantsSearchIndex() {
+  console.log("🔄 Building restaurants_search index...");
+
+  const byUser = await loadAllCollectionsByUserId();
+  const batch = db.batch();
+  let count = 0;
+
+  for (const [uid, bucket] of Object.entries(byUser)) {
+    const user = bucket.users?.[0];
+    if (!user || user.role !== "hotel") continue;
+
+    // Basic info
+    const restaurantName = user.restaurantName || "";
+    const location = user.location || "";
+
+    // Cuisines
+    const cuisines =
+      bucket.restaurantcuisine?.[0]?.cuisines?.map(c =>
+        String(c).toLowerCase()
+      ) || [];
+
+    // Image
+    const image =
+      bucket.coverimage?.[0]?.coverImageUrl ||
+      bucket.logoimage?.[0]?.logoImageUrl ||
+      "";
+
+    // Average cost
+    let averageCost = Number(user.averageCost || 0);
+    const menu = bucket.menuItems || [];
+
+    if (!averageCost && menu.length) {
+      const prices = menu.map(m => Number(m.price || 0)).filter(Boolean);
+      if (prices.length) {
+        averageCost = Math.round(
+          prices.reduce((a, b) => a + b, 0) / prices.length
+        );
+      }
+    }
+
+    // Max seats
+    const maxSeats = (bucket.tables || []).reduce(
+      (max, t) => Math.max(max, Number(t.numSeats || 0)),
+      0
+    );
+
+    // Amenities & vibes
+    const amenities = (bucket.amenities || []).map(a =>
+      String(a.name || a).toLowerCase()
+    );
+
+    const vibes = (bucket.experiences || []).map(e =>
+      String(e.name || "").toLowerCase()
+    );
+
+    // Write index doc
+    const ref = db.collection("restaurants_search").doc(uid);
+
+    batch.set(ref, {
+      restaurantId: uid,
+      restaurantName,
+      location,
+      cuisines,
+      averageCost,
+      maxSeats,
+      image,
+      amenities,
+      vibes,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    count++;
+  }
+
+  await batch.commit();
+  console.log(`✅ Indexed ${count} restaurants`);
+}
+
+// ---------------------
+// 🔁 REBUILD SEARCH INDEX (RUN ONCE)
+// ---------------------
+app.post("/rebuild-search-index", async (req, res) => {
+  try {
+    await buildRestaurantsSearchIndex();
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ---------------------
 // ✅ AI SEARCH (CACHED)
 // ---------------------
 app.post("/ai-search", async (req, res) => {
@@ -220,10 +317,13 @@ app.post("/ai-search", async (req, res) => {
   const intent = AI_QUERY_CACHE.get(normalizedQuery); // full intent object
   const { place, cuisine, vibe, maxBudget, keywords } = intent;
 
-  const byUser = await loadAllCollectionsByUserId();
+  /*const byUser = await loadAllCollectionsByUserId();
   let candidates = Object.entries(byUser)
     .map(([uid, bucket]) => buildRestaurantProfile(uid, bucket))
-    .filter((p) => p.raw?.userDoc?.role === "hotel");
+    .filter((p) => p.raw?.userDoc?.role === "hotel");*/
+    const snap = await db.collection("restaurants_search").get();
+let candidates = snap.docs.map(d => d.data());
+
 
   // Apply all filters exactly like below
   if (place) candidates = candidates.filter((p) => normalize(p.location).includes(place));
@@ -336,15 +436,18 @@ Query: "${query}"
     // ✅ SAVE TO AI CACHE
     AI_QUERY_CACHE.set(normalizedQuery, { place, cuisine, vibe, maxBudget, people, keywords });
 
-    const byUser = await loadAllCollectionsByUserId();
+    /*const byUser = await loadAllCollectionsByUserId();
 console.log("BY USER:", JSON.stringify(byUser, null, 2));
     let candidates = Object.entries(byUser)
   .map(([uid, bucket]) => buildRestaurantProfile(uid, bucket))
   console.log("ALL USERS:", candidates.map(c => ({ name: c.restaurantName, role: c.raw.userDoc.role })))
-  .filter((p) => p.raw?.userDoc?.role === "hotel");
+  .filter((p) => p.raw?.userDoc?.role === "hotel");*/
+  const snap = await db.collection("restaurants_search").get();
+let candidates = snap.docs.map(d => d.data());
+
 
 // ✅ PLACE
-if (place) {
+/*if (place) {
   candidates = candidates.filter((p) =>
     normalize(p.location).includes(place)
   );
@@ -399,7 +502,34 @@ if (vibe) {
 
     return text.includes(vibe);
   });
+}*/
+
+if (place) {
+  candidates = candidates.filter(r =>
+    r.location.toLowerCase().includes(place)
+  );
 }
+
+if (cuisine) {
+  candidates = candidates.filter(r =>
+    r.cuisines.some(c => c.includes(cuisine))
+  );
+}
+
+if (maxBudget) {
+  candidates = candidates.filter(r => r.averageCost <= maxBudget);
+}
+
+if (people) {
+  candidates = candidates.filter(r => r.maxSeats >= people);
+}
+
+if (vibe) {
+  candidates = candidates.filter(r =>
+    [...r.vibes, ...r.amenities].join(" ").includes(vibe)
+  );
+}
+
 
 // ✅ KEYWORDS
 if (keywords.length) {
