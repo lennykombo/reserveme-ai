@@ -103,6 +103,8 @@ async function loadAllCollectionsByUserId() {
     "reviews",
     "sections",
     "extrareserves",
+    "coverimage",
+    "logoimage",  
   ];
 
   const snaps = await Promise.all(
@@ -340,7 +342,7 @@ Query: "${query}"
 console.log("BY USER:", JSON.stringify(byUser, null, 2));
     let candidates = Object.entries(byUser)
   .map(([uid, bucket]) => buildRestaurantProfile(uid, bucket))
-  console.log("ALL USERS:", candidates.map(c => ({ name: c.restaurantName, role: c.raw.userDoc.role })));
+  console.log("ALL USERS:", candidates.map(c => ({ name: c.restaurantName, role: c.raw.userDoc.role })))
   .filter((p) => p.raw?.userDoc?.role === "hotel");
 
 // ✅ PLACE
