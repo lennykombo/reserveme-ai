@@ -304,51 +304,57 @@ app.post("/ai-search", async (req, res) => {
     const normalizedQuery = query.toLowerCase().trim();
     console.log("🔍 SEARCH:", normalizedQuery);
 
-  /*  const isEventSearch =
-  normalizedQuery.includes("event") ||
-  normalizedQuery.includes("conference") ||
-  normalizedQuery.includes("ground") ||
-  normalizedQuery.includes("meeting") ||
-  normalizedQuery.includes("hall");*/
-
     // ✅ AI CACHE HIT
     if (AI_QUERY_CACHE.has(normalizedQuery)) {
-  console.log("🧠 USING AI CACHE");
-  const intent = AI_QUERY_CACHE.get(normalizedQuery); // full intent object
-  const { place, cuisine, vibe, maxBudget, keywords } = intent;
+      console.log("🧠 USING AI CACHE");
+      const intent = AI_QUERY_CACHE.get(normalizedQuery); // full intent object
+      const { place, cuisine, vibe, maxBudget, keywords } = intent;
 
-  /*const byUser = await loadAllCollectionsByUserId();
-  let candidates = Object.entries(byUser)
-    .map(([uid, bucket]) => buildRestaurantProfile(uid, bucket))
-    .filter((p) => p.raw?.userDoc?.role === "hotel");*/
-    const snap = await db.collection("restaurants_search").get();
-let candidates = snap.docs.map(d => d.data());
+      const snap = await db.collection("restaurants_search").get();
+      let candidates = snap.docs.map(d => d.data());
 
+      // Apply filters safely (lowercase normalization)
+      if (place) {
+        const placeNorm = place.toLowerCase();
+        candidates = candidates.filter(r => r.location.toLowerCase().includes(placeNorm));
+      }
 
-  // Apply all filters exactly like below
-  if (place) candidates = candidates.filter((p) => normalize(p.location).includes(place));
-  if (cuisine) candidates = candidates.filter((p) => (p.cuisines || []).some((c) => normalize(c).includes(cuisine)));
-  if (maxBudget) candidates = candidates.filter((p) => p.averageCost <= maxBudget);
-  if (vibe) candidates = candidates.filter((p) => {
-    const text = [
-      ...(p.amenities || []),
-      ...(p.experiences || []).map((e) => e.name),
-      p.cuisines || [],
-      p.restaurantName,
-      p.location,
-    ].join(" ").toLowerCase();
-    return text.includes(vibe);
-  });
-  if (keywords.length) candidates = candidates.filter((p) => {
-    const blob = JSON.stringify(p).toLowerCase();
-    return keywords.some((k) => blob.includes(k.toLowerCase()));
-  });
+      if (cuisine) {
+        const cuisineNorm = cuisine.toLowerCase();
+        candidates = candidates.filter(r =>
+          r.cuisines.some(c => c.toLowerCase().includes(cuisineNorm))
+        );
+      }
 
-  return res.json({ success: true, cached: true, intent, total: candidates.length, restaurants: candidates.slice(0, 50) });
-}
+      if (maxBudget) {
+        candidates = candidates.filter(r => r.averageCost <= maxBudget);
+      }
 
+      if (vibe) {
+        const vibeNorm = vibe.toLowerCase();
+        candidates = candidates.filter(r =>
+          [...r.vibes, ...r.amenities].join(" ").toLowerCase().includes(vibeNorm)
+        );
+      }
 
-    // ✅ AI REQUEST
+      if (keywords && keywords.length) {
+        const keywordsNorm = keywords.map(k => k.toLowerCase());
+        candidates = candidates.filter(p => {
+          const blob = JSON.stringify(p).toLowerCase();
+          return keywordsNorm.some(k => blob.includes(k));
+        });
+      }
+
+      return res.json({
+        success: true,
+        cached: true,
+        intent,
+        total: candidates.length,
+        restaurants: candidates.slice(0, 50),
+      });
+    }
+
+    // ✅ AI REQUEST (new query)
     const prompt = `
 You are an AI that extracts restaurant search intent.
 
@@ -390,168 +396,67 @@ Query: "${query}"
     const vibe = normalize(intent.vibe);
     const maxBudget = Number(intent.maxBudget) || null;
     const people =
-         Number(intent.people) ||
-        extractPeopleFromText(query) ||
-        null;
-    // ⭐ EVENT SPACE SEARCH LOGIC (Runs before restaurant filters)
-/*if (isEventSearch && people) {
-  console.log("🎪 EVENT SEARCH ACTIVATED for", people, "people");
-
-  const eventSpaces = [];
-
-  for (const [uid, bucket] of Object.entries(await loadAllCollectionsByUserId())) {
-    const extras = bucket.extrareserves || [];
-
-    extras.forEach((ex) => {
-      const cap = Number(ex.capacity || 0);
-
-      // Must hold required number of people
-      if (cap >= people) {
-        eventSpaces.push({
-          id: ex.id,
-          userId: uid,
-          name: ex.name,
-          capacity: ex.capacity,
-          size: ex.size,
-          imageUrl: ex.imageUrl,
-          location: bucket.users?.[0]?.location || "",
-          restaurantName: bucket.users?.[0]?.restaurantName || "",
-        });
-      }
-    });
-  }
-
-  return res.json({
-    success: true,
-    type: "event_spaces",
-    intent: { place, cuisine, vibe, maxBudget, people, keywords },
-    total: eventSpaces.length,
-    events: eventSpaces,
-  });
-}*/
+      Number(intent.people) ||
+      extractPeopleFromText(query) ||
+      null;
     const keywords = intent.keywords || [];
-
-
 
     // ✅ SAVE TO AI CACHE
     AI_QUERY_CACHE.set(normalizedQuery, { place, cuisine, vibe, maxBudget, people, keywords });
 
-    /*const byUser = await loadAllCollectionsByUserId();
-console.log("BY USER:", JSON.stringify(byUser, null, 2));
-    let candidates = Object.entries(byUser)
-  .map(([uid, bucket]) => buildRestaurantProfile(uid, bucket))
-  console.log("ALL USERS:", candidates.map(c => ({ name: c.restaurantName, role: c.raw.userDoc.role })))
-  .filter((p) => p.raw?.userDoc?.role === "hotel");*/
-  const snap = await db.collection("restaurants_search").get();
-let candidates = snap.docs.map(d => d.data());
+    // Fetch candidates from indexed collection
+    const snap = await db.collection("restaurants_search").get();
+    let candidates = snap.docs.map(d => d.data());
 
+    // Apply filters
+    if (place) {
+      const placeNorm = place.toLowerCase();
+      candidates = candidates.filter(r => r.location.toLowerCase().includes(placeNorm));
+    }
 
-// ✅ PLACE
-/*if (place) {
-  candidates = candidates.filter((p) =>
-    normalize(p.location).includes(place)
-  );
-}
+    if (cuisine) {
+      const cuisineNorm = cuisine.toLowerCase();
+      candidates = candidates.filter(r =>
+        r.cuisines.some(c => c.toLowerCase().includes(cuisineNorm))
+      );
+    }
 
-// ✅ CUISINE 
-if (cuisine) {
-  const normalizeCuisine = (c) =>
-    c
-      ?.toLowerCase()
-      .replace(/_/g, " ")
-      .replace(/\bfood\b|\bcuisine\b/g, "") // remove 'food' or 'cuisine'
-      .trim();
+    if (maxBudget) {
+      candidates = candidates.filter(r => r.averageCost <= maxBudget);
+    }
 
-  const normalizedInput = normalizeCuisine(cuisine);
+    if (people) {
+      candidates = candidates.filter(r => r.maxSeats >= people);
+    }
 
-  candidates = candidates.filter((p) =>
-    (p.cuisines || []).some((c) => normalizeCuisine(c).includes(normalizedInput))
-  );
-}
+    if (vibe) {
+      const vibeNorm = vibe.toLowerCase();
+      candidates = candidates.filter(r =>
+        [...r.vibes, ...r.amenities].join(" ").toLowerCase().includes(vibeNorm)
+      );
+    }
 
-
-// ✅ BUDGET
-if (maxBudget) {
-  candidates = candidates.filter((p) => p.averageCost <= maxBudget);
-}
-
-// ✅ PEOPLE / SEATS FILTER (TABLES)
-if (people) {
-  candidates = candidates.filter((p) => {
-    const tables = p.raw?.tables || [];
-
-    return tables.some((t) => {
-      const seats = Number(t.numSeats || 0);
-      return seats >= people;
-    });
-  });
-}
-
-
-// ✅ VIBE → match against amenities + experiences + keywords
-if (vibe) {
-  candidates = candidates.filter((p) => {
-    const text = [
-      ...(p.amenities || []),
-      ...(p.experiences || []).map((e) => e.name),
-      p.restaurantName,
-      p.location,
-    ]
-      .join(" ")
-      .toLowerCase();
-
-    return text.includes(vibe);
-  });
-}*/
-
-if (place) {
-  candidates = candidates.filter(r =>
-    r.location.toLowerCase().includes(place)
-  );
-}
-
-if (cuisine) {
-  candidates = candidates.filter(r =>
-    r.cuisines.some(c => c.includes(cuisine))
-  );
-}
-
-if (maxBudget) {
-  candidates = candidates.filter(r => r.averageCost <= maxBudget);
-}
-
-if (people) {
-  candidates = candidates.filter(r => r.maxSeats >= people);
-}
-
-if (vibe) {
-  candidates = candidates.filter(r =>
-    [...r.vibes, ...r.amenities].join(" ").includes(vibe)
-  );
-}
-
-
-// ✅ KEYWORDS
-if (keywords.length) {
-  candidates = candidates.filter((p) => {
-    const blob = JSON.stringify(p).toLowerCase();
-    return keywords.some((k) => blob.includes(k.toLowerCase()));
-   });
- }
-
+    if (keywords.length) {
+      const keywordsNorm = keywords.map(k => k.toLowerCase());
+      candidates = candidates.filter(p => {
+        const blob = JSON.stringify(p).toLowerCase();
+        return keywordsNorm.some(k => blob.includes(k));
+      });
+    }
 
     return res.json({
-  success: true,
-  intent: { place, cuisine, vibe, maxBudget, people, keywords },
-  total: candidates.length,
-  restaurants: candidates.slice(0, 50),
- });
+      success: true,
+      intent: { place, cuisine, vibe, maxBudget, people, keywords },
+      total: candidates.length,
+      restaurants: candidates.slice(0, 50),
+    });
 
   } catch (err) {
     console.error("❌ SEARCH ERROR:", err);
     return res.status(500).json({ error: "Server error", details: err.message });
   }
 });
+
 
 app.get("/test-firestore", async (req, res) => {
   try {
