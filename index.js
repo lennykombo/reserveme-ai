@@ -245,13 +245,29 @@ setInterval(() => {
 app.post("/ai-search", async (req, res) => {
   try {
     const { query } = req.body;
-    if (!query || !String(query).trim()) return res.status(400).json({ error: "Query is required" });
+    if (!query || !String(query).trim()) {
+      return res.status(400).json({ error: "Query is required" });
+    }
 
     const normalizedQuery = query.toLowerCase().trim();
     console.log("🔍 SEARCH QUERY:", normalizedQuery);
 
+    // ----------------------------
     // Helper for normalization
-    const norm = (s) => s ? String(s).toLowerCase().trim().replace(/\s+/g," ") : "";
+    // ----------------------------
+    const normalize = (s) =>
+      s
+        ? String(s)
+            .toLowerCase()
+            .trim()
+            .replace(/\s+/g, " ")       // collapse multiple spaces
+            .replace(/\s*,\s*/g, ",")  // remove spaces around commas
+        : "";
+
+    function extractPeopleFromText(text = "") {
+      const match = text.match(/\b(?:for|number of|group of)?\s*(\d{1,3})\s*(people|persons|guests|pax)?\b/i);
+      return match ? Number(match[1]) : null;
+    }
 
     // ----------------------------
     // AI CACHE HIT
@@ -262,23 +278,61 @@ app.post("/ai-search", async (req, res) => {
       let { place, cuisine, vibe, maxBudget, keywords, people } = intent;
 
       const snap = await db.collection("restaurants_search").get();
-      let candidates = snap.docs.map(d => d.data());
+      let candidates = snap.docs.map((d) => d.data());
       console.log("Total candidates from index:", candidates.length);
 
-      if (place) candidates = candidates.filter(r => norm(r.location).includes(place));
-      if (cuisine) candidates = candidates.filter(r => (r.cuisines||[]).some(c => norm(c).includes(cuisine)));
-      if (vibe) candidates = candidates.filter(r => [...r.vibes,...r.amenities].some(v => norm(v).includes(vibe)));
-      if (maxBudget) candidates = candidates.filter(r => r.averageCost <= maxBudget);
-      if (people) candidates = candidates.filter(r => r.maxSeats >= people);
+      // ----------------------------
+      // APPLY FILTERS
+      // ----------------------------
+      if (place) {
+        const queryPlace = normalize(place);
+        candidates = candidates.filter((r) =>
+          normalize(r.location).includes(queryPlace)
+        );
+        console.log("After PLACE filter:", candidates.length);
+      }
+
+      if (cuisine) {
+        const queryCuisine = normalize(cuisine);
+        candidates = candidates.filter((r) =>
+          (r.cuisines || []).some((c) => normalize(c).includes(queryCuisine))
+        );
+        console.log("After CUISINE filter:", candidates.length);
+      }
+
+      if (vibe) {
+        const queryVibe = normalize(vibe);
+        candidates = candidates.filter((r) =>
+          [...r.vibes, ...r.amenities].some((v) =>
+            normalize(v).includes(queryVibe)
+          )
+        );
+        console.log("After VIBE filter:", candidates.length);
+      }
+
+      if (maxBudget) {
+        candidates = candidates.filter((r) => r.averageCost <= maxBudget);
+      }
+
+      if (people) {
+        candidates = candidates.filter((r) => r.maxSeats >= people);
+      }
+
       if (keywords && Array.isArray(keywords)) {
-        const keywordsNorm = keywords.map(k => norm(k));
-        candidates = candidates.filter(r => {
+        const keywordsNorm = keywords.map((k) => normalize(k));
+        candidates = candidates.filter((r) => {
           const blob = JSON.stringify(r).toLowerCase();
-          return keywordsNorm.some(k => blob.includes(k));
+          return keywordsNorm.some((k) => blob.includes(k));
         });
       }
 
-      return res.json({ success:true, cached:true, intent, total:candidates.length, restaurants:candidates.slice(0,50) });
+      return res.json({
+        success: true,
+        cached: true,
+        intent,
+        total: candidates.length,
+        restaurants: candidates.slice(0, 50),
+      });
     }
 
     // ----------------------------
@@ -291,9 +345,10 @@ Extract fields if present:
 - cuisine (food type)
 - vibe (romantic, family, chill, rooftop, etc)
 - maxBudget (number only)
-- people (number of guests — detect phrases like "for 2", "group of 5")
+- people (number of guests — detect phrases like "for 2", "group of 5", "number of people 10")
 - keywords (any other useful words)
 Return ONLY valid JSON:
+
 {
   "place": "",
   "cuisine": "",
@@ -302,50 +357,97 @@ Return ONLY valid JSON:
   "people": null,
   "keywords": []
 }
+
 Query: "${query}"
 `;
 
-    const aiResp = await groq.chat.completions.create({ model:"llama-3.1-8b-instant", messages:[{role:"user", content:prompt}] });
+    const aiResp = await groq.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [{ role: "user", content: prompt }],
+    });
+
     const rawAiText = aiResp?.choices?.[0]?.message?.content || "";
     console.log("🧠 AI RAW RESPONSE:", rawAiText);
 
-    const intentParsed = safeParseJSON(rawAiText);
-    let place = norm(intentParsed.place);
-    let cuisine = norm(intentParsed.cuisine);
-    let vibe = norm(intentParsed.vibe);
-    let maxBudget = Number(intentParsed.maxBudget) || null;
-    let people = Number(intentParsed.people) || extractPeopleFromText(query) || null;
-    let keywords = Array.isArray(intentParsed.keywords) ? intentParsed.keywords : intentParsed.keywords ? [intentParsed.keywords] : [];
+    const intent = safeParseJSON(rawAiText);
+    let place = normalize(intent.place);
+    let cuisine = normalize(intent.cuisine);
+    let vibe = normalize(intent.vibe);
+    let maxBudget = Number(intent.maxBudget) || null;
+    let people =
+      Number(intent.people) || extractPeopleFromText(query) || null;
+    let keywords = Array.isArray(intent.keywords)
+      ? intent.keywords
+      : intent.keywords
+      ? [intent.keywords]
+      : [];
 
     // SAVE TO AI CACHE
-    AI_QUERY_CACHE.set(normalizedQuery, { place, cuisine, vibe, maxBudget, people, keywords });
+    AI_QUERY_CACHE.set(normalizedQuery, {
+      place,
+      cuisine,
+      vibe,
+      maxBudget,
+      people,
+      keywords,
+    });
 
     // Fetch all candidates
     const snap = await db.collection("restaurants_search").get();
-    let candidates = snap.docs.map(d => d.data());
+    let candidates = snap.docs.map((d) => d.data());
     console.log("Total candidates from index:", candidates.length);
 
-    // Filtering
-    if (place) candidates = candidates.filter(r => norm(r.location).includes(place));
-    if (cuisine) candidates = candidates.filter(r => (r.cuisines||[]).some(c => norm(c).includes(cuisine)));
-    if (vibe) candidates = candidates.filter(r => [...r.vibes,...r.amenities].some(v => norm(v).includes(vibe)));
-    if (maxBudget) candidates = candidates.filter(r => r.averageCost <= maxBudget);
-    if (people) candidates = candidates.filter(r => r.maxSeats >= people);
+    // ----------------------------
+    // FILTERING
+    // ----------------------------
+    if (place) {
+      candidates = candidates.filter((r) =>
+        normalize(r.location).includes(place)
+      );
+    }
+
+    if (cuisine) {
+      candidates = candidates.filter((r) =>
+        (r.cuisines || []).some((c) => normalize(c).includes(cuisine))
+      );
+    }
+
+    if (vibe) {
+      candidates = candidates.filter((r) =>
+        [...r.vibes, ...r.amenities].some((v) => normalize(v).includes(vibe))
+      );
+    }
+
+    if (maxBudget) {
+      candidates = candidates.filter((r) => r.averageCost <= maxBudget);
+    }
+
+    if (people) {
+      candidates = candidates.filter((r) => r.maxSeats >= people);
+    }
+
     if (keywords.length) {
-      const keywordsNorm = keywords.map(k => norm(k));
-      candidates = candidates.filter(r => {
+      const keywordsNorm = keywords.map((k) => normalize(k));
+      candidates = candidates.filter((r) => {
         const blob = JSON.stringify(r).toLowerCase();
-        return keywordsNorm.some(k => blob.includes(k));
+        return keywordsNorm.some((k) => blob.includes(k));
       });
     }
 
-    return res.json({ success:true, intent:{place,cuisine,vibe,maxBudget,people,keywords}, total:candidates.length, restaurants:candidates.slice(0,50) });
-
+    return res.json({
+      success: true,
+      intent: { place, cuisine, vibe, maxBudget, people, keywords },
+      total: candidates.length,
+      restaurants: candidates.slice(0, 50),
+    });
   } catch (err) {
     console.error("❌ SEARCH ERROR:", err);
-    return res.status(500).json({ error:"Server error", details:err.message });
+    return res
+      .status(500)
+      .json({ error: "Server error", details: err.message });
   }
 });
+
 
 // ---------------------
 app.get("/", (req, res) => res.send("✅ ReserveMe AI Search Backend (Optimized)"));
