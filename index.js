@@ -414,32 +414,41 @@ Query: "${query}"
     let candidates = snap.docs.map(d => d.data());
 
     // Apply filters
-    if (place) {
-      const placeNorm = place.toLowerCase();
-      candidates = candidates.filter(r => r.location.toLowerCase().includes(placeNorm));
-    }
+   if (place) {
+  const placeNorm = normalize(place);
+  candidates = candidates.filter(r =>
+    normalize(r.location).includes(placeNorm)
+  );
+}
 
-    if (cuisine) {
-      const cuisineNorm = cuisine.toLowerCase();
-      candidates = candidates.filter(r =>
-        r.cuisines.some(c => c.toLowerCase().includes(cuisineNorm))
-      );
-    }
+if (cuisine) {
+  const cuisineNorm = normalize(cuisine);
+  candidates = candidates.filter(r =>
+    (r.cuisines || []).some(c => normalize(c).includes(cuisineNorm))
+  );
+}
 
-    if (maxBudget) {
-      candidates = candidates.filter(r => r.averageCost <= maxBudget);
-    }
+if (vibe) {
+  const vibeNorm = normalize(vibe);
+  candidates = candidates.filter(r =>
+    [...(r.vibes || []), ...(r.amenities || [])]
+      .join(" ")
+      .toLowerCase()
+      .includes(vibeNorm)
+  );
+}
 
-    if (people) {
-      candidates = candidates.filter(r => r.maxSeats >= people);
-    }
+if (maxBudget) {
+  candidates = candidates.filter(r =>
+    Number(r.averageCost || 0) <= maxBudget
+  );
+}
 
-    if (vibe) {
-      const vibeNorm = vibe.toLowerCase();
-      candidates = candidates.filter(r =>
-        [...r.vibes, ...r.amenities].join(" ").toLowerCase().includes(vibeNorm)
-      );
-    }
+if (people) {
+  candidates = candidates.filter(r =>
+    Number(r.maxSeats || 0) >= people
+  );
+}
 
     if (keywords.length) {
       const keywordsNorm = keywords.map(k => k.toLowerCase());
@@ -448,6 +457,17 @@ Query: "${query}"
         return keywordsNorm.some(k => blob.includes(k));
       });
     }
+
+    console.log(
+  candidates.map(r => ({
+    name: r.restaurantName,
+    location: r.location,
+    cuisines: r.cuisines,
+    avg: r.averageCost,
+    seats: r.maxSeats
+  }))
+);
+
 
     return res.json({
       success: true,
