@@ -103,8 +103,6 @@ async function loadAllCollectionsByUserId() {
     "reviews",
     "sections",
     "extrareserves",
-    "coverimage",
-    "logoimage",  
   ];
 
   const snaps = await Promise.all(
