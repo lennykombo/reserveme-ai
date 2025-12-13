@@ -264,6 +264,17 @@ app.post("/ai-search", async (req, res) => {
             .replace(/\s*,\s*/g, ",")  // remove spaces around commas
         : "";
 
+     function normalizeCuisine(s) {
+    return s
+    ? String(s)
+        .toLowerCase()
+        .trim()
+        .replace(/_/g, " ")          // underscores → spaces
+        .replace(/\bfood\b|\bcuisine\b/g, "") // remove 'food' or 'cuisine'
+        .replace(/\s+/g, " ")        // collapse multiple spaces
+    : "";
+  }
+
     function extractPeopleFromText(text = "") {
       const match = text.match(/\b(?:for|number of|group of)?\s*(\d{1,3})\s*(people|persons|guests|pax)?\b/i);
       return match ? Number(match[1]) : null;
@@ -292,13 +303,20 @@ app.post("/ai-search", async (req, res) => {
         console.log("After PLACE filter:", candidates.length);
       }
 
-      if (cuisine) {
+      /*if (cuisine) {
         const queryCuisine = normalize(cuisine);
         candidates = candidates.filter((r) =>
           (r.cuisines || []).some((c) => normalize(c).includes(queryCuisine))
         );
         console.log("After CUISINE filter:", candidates.length);
-      }
+      }*/
+     if (cuisine) {
+     const queryCuisine = normalizeCuisine(cuisine);
+     candidates = candidates.filter((r) =>
+      (r.cuisines || []).some((c) => normalizeCuisine(c).includes(queryCuisine))
+      );
+     }
+
 
       if (vibe) {
         const queryVibe = normalize(vibe);
