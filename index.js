@@ -290,97 +290,97 @@ app.post("/ai-search", async (req, res) => {
     const normalizedQuery = query.toLowerCase().trim();
     console.log("🔍 SEARCH QUERY:", normalizedQuery);
 
-    // ---------------------------
-    // ✅ AI CACHE HIT
-    // ---------------------------
+    // ----------------------------
+    // Helper for normalization
+    // ----------------------------
+    const normalize = (s) =>
+      s
+        ? String(s)
+            .toLowerCase()
+            .trim()
+            .replace(/\s+/g, " ")       // collapse multiple spaces
+            .replace(/\s*,\s*/g, ",")  // remove spaces around commas
+        : "";
+
+    // ----------------------------
+    // AI CACHE HIT
+    // ----------------------------
     if (AI_QUERY_CACHE.has(normalizedQuery)) {
       console.log("🧠 USING AI CACHE");
-
-      let cachedIntent = AI_QUERY_CACHE.get(normalizedQuery);
-
-      // Normalize keywords to always be an array
-      if (!Array.isArray(cachedIntent.keywords)) {
-        if (typeof cachedIntent.keywords === "string" && cachedIntent.keywords.trim()) {
-          cachedIntent.keywords = [cachedIntent.keywords.trim()];
-        } else {
-          cachedIntent.keywords = [];
-        }
-      }
-
-      const { place, cuisine, vibe, maxBudget, people, keywords } = cachedIntent;
+      const intent = AI_QUERY_CACHE.get(normalizedQuery);
+      let { place, cuisine, vibe, maxBudget, keywords, people } = intent;
 
       const snap = await db.collection("restaurants_search").get();
-      let candidates = snap.docs.map(d => d.data());
+      let candidates = snap.docs.map((d) => d.data());
       console.log("Total candidates from index:", candidates.length);
 
-      // ---------------------------
-      // Apply filters
-      // ---------------------------
+      // ----------------------------
+      // APPLY FILTERS
+      // ----------------------------
       if (place) {
-        const placeNorm = place.toLowerCase();
-        candidates = candidates.filter(r => r.location.toLowerCase().includes(placeNorm));
+        const queryPlace = normalize(place);
+        candidates = candidates.filter((r) =>
+          normalize(r.location).includes(queryPlace)
+        );
         console.log("After PLACE filter:", candidates.length);
       }
 
       if (cuisine) {
-        const cuisineNorm = cuisine.toLowerCase();
-        candidates = candidates.filter(r =>
-          (r.cuisines || []).some(c => c.toLowerCase().includes(cuisineNorm))
+        const queryCuisine = normalize(cuisine);
+        candidates = candidates.filter((r) =>
+          (r.cuisines || []).some((c) => normalize(c).includes(queryCuisine))
         );
         console.log("After CUISINE filter:", candidates.length);
       }
 
-      if (maxBudget) {
-        candidates = candidates.filter(r => r.averageCost <= maxBudget);
-        console.log("After BUDGET filter:", candidates.length);
-      }
-
-      if (people) {
-        candidates = candidates.filter(r => r.maxSeats >= people);
-        console.log("After PEOPLE filter:", candidates.length);
-      }
-
       if (vibe) {
-        const vibeNorm = vibe.toLowerCase();
-        candidates = candidates.filter(r =>
-          [...r.vibes, ...r.amenities].join(" ").toLowerCase().includes(vibeNorm)
+        const queryVibe = normalize(vibe);
+        candidates = candidates.filter((r) =>
+          [...r.vibes, ...r.amenities].some((v) =>
+            normalize(v).includes(queryVibe)
+          )
         );
         console.log("After VIBE filter:", candidates.length);
       }
 
-      if (keywords.length) {
-        const keywordsNorm = keywords.map(k => k.toLowerCase());
-        candidates = candidates.filter(p => {
-          const blob = JSON.stringify(p).toLowerCase();
-          return keywordsNorm.some(k => blob.includes(k));
+      if (maxBudget) {
+        candidates = candidates.filter((r) => r.averageCost <= maxBudget);
+      }
+
+      if (people) {
+        candidates = candidates.filter((r) => r.maxSeats >= people);
+      }
+
+      if (keywords && Array.isArray(keywords)) {
+        const keywordsNorm = keywords.map((k) => normalize(k));
+        candidates = candidates.filter((r) => {
+          const blob = JSON.stringify(r).toLowerCase();
+          return keywordsNorm.some((k) => blob.includes(k));
         });
       }
 
       return res.json({
         success: true,
         cached: true,
-        intent: cachedIntent,
+        intent,
         total: candidates.length,
         restaurants: candidates.slice(0, 50),
       });
     }
 
-    // ---------------------------
-    // ✅ AI REQUEST (new query)
-    // ---------------------------
+    // ----------------------------
+    // NEW AI QUERY
+    // ----------------------------
     const prompt = `
 You are an AI that extracts restaurant search intent.
-
-Extract the following fields if present:
+Extract fields if present:
 - place (area or location)
 - cuisine (food type)
 - vibe (romantic, family, chill, rooftop, etc)
-- maxBudget (number only, if price is mentioned)
-- people (number of guests — detect from phrases like:
-  "for 2", "2 people", "group of 5", "for ten", "party of 8")
-- keywords (any remaining useful words)
-
-Return ONLY valid JSON in this format:
+- maxBudget (number only)
+- people (number of guests — detect phrases like "for 2", "group of 5")
+- keywords (any other useful words)
+Return ONLY valid JSON:
 
 {
   "place": "",
@@ -403,66 +403,67 @@ Query: "${query}"
     console.log("🧠 AI RAW RESPONSE:", rawAiText);
 
     const intent = safeParseJSON(rawAiText);
-
     let place = normalize(intent.place);
     let cuisine = normalize(intent.cuisine);
     let vibe = normalize(intent.vibe);
     let maxBudget = Number(intent.maxBudget) || null;
-    let people = Number(intent.people) || extractPeopleFromText(query) || null;
-    let keywords = intent.keywords || [];
+    let people =
+      Number(intent.people) || extractPeopleFromText(query) || null;
+    let keywords = Array.isArray(intent.keywords)
+      ? intent.keywords
+      : intent.keywords
+      ? [intent.keywords]
+      : [];
 
-    // Normalize keywords to always be an array
-    if (!Array.isArray(keywords)) {
-      if (typeof keywords === "string" && keywords.trim()) {
-        keywords = [keywords.trim()];
-      } else {
-        keywords = [];
-      }
-    }
+    // SAVE TO AI CACHE
+    AI_QUERY_CACHE.set(normalizedQuery, {
+      place,
+      cuisine,
+      vibe,
+      maxBudget,
+      people,
+      keywords,
+    });
 
-    // Save to AI cache
-    AI_QUERY_CACHE.set(normalizedQuery, { place, cuisine, vibe, maxBudget, people, keywords });
-
-    // Fetch candidates from search index
+    // Fetch all candidates
     const snap = await db.collection("restaurants_search").get();
-    let candidates = snap.docs.map(d => d.data());
+    let candidates = snap.docs.map((d) => d.data());
     console.log("Total candidates from index:", candidates.length);
 
-    // ---------------------------
-    // Apply filters
-    // ---------------------------
+    // ----------------------------
+    // FILTERING
+    // ----------------------------
     if (place) {
-      const placeNorm = place.toLowerCase();
-      candidates = candidates.filter(r => r.location.toLowerCase().includes(placeNorm));
+      candidates = candidates.filter((r) =>
+        normalize(r.location).includes(place)
+      );
     }
 
     if (cuisine) {
-      const cuisineNorm = cuisine.toLowerCase();
-      candidates = candidates.filter(r =>
-        (r.cuisines || []).some(c => c.toLowerCase().includes(cuisineNorm))
+      candidates = candidates.filter((r) =>
+        (r.cuisines || []).some((c) => normalize(c).includes(cuisine))
+      );
+    }
+
+    if (vibe) {
+      candidates = candidates.filter((r) =>
+        [...r.vibes, ...r.amenities].some((v) => normalize(v).includes(vibe))
       );
     }
 
     if (maxBudget) {
-      candidates = candidates.filter(r => r.averageCost <= maxBudget);
+      candidates = candidates.filter((r) => r.averageCost <= maxBudget);
     }
 
     if (people) {
-      candidates = candidates.filter(r => r.maxSeats >= people);
-    }
-
-    if (vibe) {
-      const vibeNorm = vibe.toLowerCase();
-      candidates = candidates.filter(r =>
-        [...r.vibes, ...r.amenities].join(" ").toLowerCase().includes(vibeNorm)
-      );
+      candidates = candidates.filter((r) => r.maxSeats >= people);
     }
 
     if (keywords.length) {
-      const keywordsNorm = keywords.map(k => k.toLowerCase());
-      candidates = candidates.filter(p => {
-        const blob = JSON.stringify(p).toLowerCase();
-        return keywordsNorm.some(k => blob.includes(k));
+      const keywordsNorm = keywords.map((k) => normalize(k));
+      candidates = candidates.filter((r) => {
+        const blob = JSON.stringify(r).toLowerCase();
+        return keywordsNorm.some((k) => blob.includes(k));
       });
     }
 
@@ -472,24 +473,11 @@ Query: "${query}"
       total: candidates.length,
       restaurants: candidates.slice(0, 50),
     });
-
   } catch (err) {
     console.error("❌ SEARCH ERROR:", err);
-    return res.status(500).json({ error: "Server error", details: err.message });
-  }
-});
-
-
-app.get("/test-firestore", async (req, res) => {
-  try {
-    const snap = await db.collection("users").limit(5).get();
-    res.json({
-      ok: true,
-      count: snap.size,
-      sample: snap.docs.map(d => d.data())
-    });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    return res
+      .status(500)
+      .json({ error: "Server error", details: err.message });
   }
 });
 
