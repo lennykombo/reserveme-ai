@@ -319,14 +319,22 @@ app.post("/ai-search", async (req, res) => {
 
 
       if (vibe) {
-        const queryVibe = normalize(vibe);
-        candidates = candidates.filter((r) =>
-          [...r.vibes, ...r.amenities].some((v) =>
-            normalize(v).includes(queryVibe)
-          )
-        );
-        console.log("After VIBE filter:", candidates.length);
-      }
+  const queryVibe = normalize(vibe);
+
+  candidates = candidates.filter((r) => {
+    // Collect all text to search
+    const texts = [
+      ...(r.vibes || []),
+      ...(r.amenities || []),
+      ...(r.experiences || []).flatMap(e => [e.name || "", e.description || ""]),
+      ...(r.sections || []).map(s => s.name || "")
+    ];
+
+    // Check if any text includes the query
+    return texts.some(t => normalize(t).includes(queryVibe));
+  });
+}
+
 
       if (maxBudget) {
         candidates = candidates.filter((r) => r.averageCost <= maxBudget);
